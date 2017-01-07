@@ -279,6 +279,16 @@ def key_offset_str(offset, _type):
 import btrfs.ioctl
 
 
+def key_from_search_header_or_item(header):
+    if isinstance(header, btrfs.ioctl.SearchHeader):
+        return Key(header.objectid, header.type, header.offset)
+    if isinstance(header, Item):
+        return header.disk_key
+    if header is None:
+        return None
+    raise TypeError("Not a SearchHeader or Item object: {}".format(header))
+
+
 class Key(object):
     def __init__(self, objectid, _type, offset):
         self._objectid = objectid
@@ -500,7 +510,7 @@ class DevItem(object):
     dev_item = struct.Struct("<3Q3L3QL2B16s16s")
 
     def __init__(self, header, data):
-        self.key = Key(header.objectid, header.type, header.offset)
+        self.key = key_from_search_header_or_item(header)
         self.devid, self.total_bytes, self.bytes_used, self.io_align, self.io_width, \
             self.sector_size, self.type, self.generation, self.start_offset, self.dev_group, \
             self.seek_speed, self.bandwidth, uuid_bytes, fsid_bytes = \
@@ -517,7 +527,7 @@ class Chunk(object):
     chunk = struct.Struct("<4Q3L2H")
 
     def __init__(self, header, data):
-        self.key = Key(header.objectid, header.type, header.offset)
+        self.key = key_from_search_header_or_item(header)
         self.vaddr = header.offset
         self.length, self.owner, self.stripe_len, self.type, self.io_align, \
             self.io_width, self.sector_size, self.num_stripes, self.sub_stripes = \
@@ -550,7 +560,7 @@ class DevExtent(object):
     dev_extent = struct.Struct("<4Q16s")
 
     def __init__(self, header, data):
-        self.key = Key(header.objectid, header.type, header.offset)
+        self.key = key_from_search_header_or_item(header)
         self.devid = header.objectid
         self.paddr = header.offset
         self.chunk_tree, self.chunk_objectid, self.chunk_offset, self.length, uuid_bytes = \
@@ -567,7 +577,7 @@ class BlockGroupItem(object):
     block_group_item = struct.Struct("<3Q")
 
     def __init__(self, header, data):
-        self.key = Key(header.objectid, header.type, header.offset)
+        self.key = key_from_search_header_or_item(header)
         self.transid = header.transid
         self.vaddr = header.objectid
         self.length = header.offset
@@ -586,7 +596,7 @@ class ExtentItem(object):
     extent_inline_ref = struct.Struct("<BQ")
 
     def __init__(self, header, data, load_data_refs=False, load_metadata_refs=False):
-        self.key = Key(header.objectid, header.type, header.offset)
+        self.key = key_from_search_header_or_item(header)
         self.vaddr = header.objectid
         self.length = header.offset
         self.refs, self.generation, self.flags = ExtentItem.extent_item.unpack_from(data, 0)
@@ -699,7 +709,7 @@ class TreeBlockInfo(object):
 
 class MetaDataItem(object):
     def __init__(self, header, data, load_refs=False):
-        self.key = Key(header.objectid, header.type, header.offset)
+        self.key = key_from_search_header_or_item(header)
         self.vaddr = header.objectid
         self.skinny_level = header.offset
         self.refs, self.generation, self.flags = ExtentItem.extent_item.unpack_from(data, 0)
@@ -785,10 +795,7 @@ class InodeItem(object):
     inode_item = struct.Struct("<" + ''.join([s.format[1:].decode() for s in _inode_item]))
 
     def __init__(self, header, data, pos=0):
-        if header is not None:
-            self.key = Key(header.objectid, header.type, header.offset)
-        else:
-            self.key = None
+        self.key = key_from_search_header_or_item(header)
         self.generation, self.transid, self.size, self.nbytes, self.block_group, \
             self.nlink, self.uid, self.gid, self.mode, self.rdev, self.flags, self.sequence = \
             InodeItem._inode_item[0].unpack_from(data, pos)
@@ -824,7 +831,7 @@ class RootItem(object):
     root_item = struct.Struct("<" + ''.join([s.format[1:].decode() for s in _root_item]))
 
     def __init__(self, header, data):
-        self.key = Key(header.objectid, header.type, header.offset)
+        self.key = key_from_search_header_or_item(header)
         self.inode = InodeItem(None, data)
         pos = InodeItem.inode_item.size
         self.generation, self.dirid, self.bytenr, self.byte_limit, self.bytes_used, \
@@ -853,3 +860,93 @@ class RootItem(object):
         return "root uuid {0} dirid {1} gen {2} last_snapshot {3} flags {4}({5})".format(
             self.uuid, self.dirid, self.generation, self.last_snapshot,
             hex(self.flags), btrfs.utils.flags_str(self.flags, _root_flags_str_map))
+
+
+class Header(object):
+    header = struct.Struct("<32s16sQQ16sQQLB")
+
+    def __init__(self, buf, pos=0):
+        self.csum, fsid_bytes, self.bytenr, self.flags, chunk_tree_uuid_bytes, self.generation, \
+            self.owner, self.nritems, self.level = Header.header.unpack_from(buf, pos)
+        self.fsid = uuid.UUID(bytes=fsid_bytes)
+        self.chunk_tree_uid = uuid.UUID(bytes=chunk_tree_uuid_bytes)
+
+    def __str__(self):
+        return "header fsid {} chunk_tree_uid {} generation {} owner {} nritems {} " \
+            " level {}".format(self.fsid, self.chunk_tree_uid, self.generation, self.owner,
+                               self.nritems, self.level)
+
+
+class Item(object):
+    _item = [
+        DiskKey.disk_key,
+        struct.Struct("<LL"),
+    ]
+    item = struct.Struct("<" + ''.join([s.format[1:].decode() for s in _item]))
+
+    def __init__(self, buf, pos):
+        self._buf = buf
+        self._pos = pos
+        self.disk_key = DiskKey(buf, pos)
+        pos += DiskKey.disk_key.size
+        self.offset, self.size = Item._item[1].unpack_from(buf, pos)
+        if self.size > 0:
+            item_class = key_type_class_map.get(self.disk_key.type, DummyItem)
+            try:
+                self.data = item_class(self, buf, Header.header.size + self.offset)
+            except Exception:
+                print("Failed to load data for item %s" % self.disk_key)
+
+    def __str__(self):
+        return "item {} offset {} size {}".format(self.disk_key, self.offset, self.size)
+
+
+class DirItem(object):
+    _dir_item = [
+        DiskKey.disk_key,
+        struct.Struct("<QHHB")
+    ]
+    dir_item = struct.Struct("<" + ''.join([s.format[1:].decode() for s in _dir_item]))
+
+    def __init__(self, header, buf, pos=0):
+        self._buf = buf
+        self._pos = pos
+        self.key = key_from_search_header_or_item(header)
+        self.location = DiskKey(buf, pos)
+        pos += DiskKey.disk_key.size
+        self.transid, self.data_len, self.name_len, self.type = \
+            DirItem._dir_item[1].unpack_from(buf, pos)
+
+    def __str__(self):
+        return "dir location {} transid {} data_len {} name_len {} type {}".format(
+            self.location, self.transid, self.data_len, self.name_len, self.type)
+
+
+class Leaf(object):
+    def __init__(self, buf):
+        self.header = Header(buf)
+        self.items = [Item(buf, Header.header.size + (i * Item.item.size))
+                      for i in range(self.header.nritems)]
+
+
+class DummyItem(object):
+    def __init__(self, header, buf, pos=0):
+        self.key = key_from_search_header_or_item(header)
+        self._buf = buf
+        self._pos = pos
+
+
+key_type_class_map = {
+    INODE_ITEM_KEY: InodeItem,
+    DIR_ITEM_KEY: DirItem,
+    ROOT_ITEM_KEY: RootItem,
+    EXTENT_ITEM_KEY: ExtentItem,
+    METADATA_ITEM_KEY: MetaDataItem,
+    EXTENT_DATA_REF_KEY: ExtentDataRef,
+    SHARED_BLOCK_REF_KEY: SharedBlockRef,
+    SHARED_DATA_REF_KEY: SharedDataRef,
+    BLOCK_GROUP_ITEM_KEY: BlockGroupItem,
+    DEV_EXTENT_KEY: DevExtent,
+    DEV_ITEM_KEY: DevItem,
+    CHUNK_ITEM_KEY: Chunk,
+}
