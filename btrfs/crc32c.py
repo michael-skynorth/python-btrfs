@@ -88,6 +88,16 @@ table = (
 )
 
 
+import btrfs.ctree
+
+
+def csum_block(buf):  # <- node or leaf buf
+    crc = 4294967295  # (u32)~0
+    for pos in range(btrfs.ctree.CSUM_SIZE, len(buf)):
+        crc = table[(crc ^ buf[pos]) & 0xff] ^ (crc >> 8)
+    return ~crc & 0xffffffff
+
+
 def name_hash(data):
     if _python2:
         data = bytearray(data)

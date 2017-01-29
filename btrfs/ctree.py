@@ -160,6 +160,9 @@ _inode_flags_str_map = {
     INODE_COMPRESS: 'COMPRESS',
 }
 
+CSUM_SIZE = 32
+CSUM_TYPE_CRC32 = 0
+
 ROOT_SUBVOL_RDONLY = 1 << 0
 
 _root_flags_str_map = {
@@ -277,6 +280,7 @@ def key_offset_str(offset, _type):
 
 
 import btrfs.ioctl
+import btrfs.crc32c
 
 
 def key_from_search_header_or_item(header):
@@ -866,9 +870,17 @@ class RootItem(object):
 
 
 class Header(object):
-    header = struct.Struct("<32s16sQQ16sQQLB")
+    # XXX hardcode csum to 32 bits unsigned long crc32c
+    _header = [
+        struct.Struct("<L"),
+        struct.Struct("<28x"),
+        struct.Struct("<16sQQ16sQQLB"),
+    ]
+    header = struct.Struct("<" + ''.join([s.format[1:].decode() for s in _header]))
 
     def __init__(self, buf, pos=0):
+        self._buf = buf
+        self._pos = pos
         self.csum, fsid_bytes, self.bytenr, self.flags, chunk_tree_uuid_bytes, self.generation, \
             self.owner, self.nritems, self.level = Header.header.unpack_from(buf, pos)
         self.fsid = uuid.UUID(bytes=fsid_bytes)
@@ -878,6 +890,17 @@ class Header(object):
         return "header fsid {} chunk_tree_uid {} generation {} owner {} nritems {} " \
             " level {}".format(self.fsid, self.chunk_tree_uid, self.generation, self.owner,
                                self.nritems, self.level)
+
+    def write(self):
+        fsid_bytes = self.fsid.bytes
+        chunk_tree_uuid_bytes = self.chunk_tree_uid.bytes
+        pos = self._pos + Header._header[0].size + Header._header[1].size
+        Header._header[2].pack_into(self._buf, pos, fsid_bytes, self.bytenr, self.flags,
+                                    chunk_tree_uuid_bytes, self.generation, self.owner,
+                                    self.nritems, self.level)
+        # XXX: assumes 16KiB block for this metadata page only
+        self.csum = btrfs.crc32c.csum_block(self._buf)
+        Header._header[0].pack_into(self._buf, self._pos, self.csum)
 
 
 class Item(object):
@@ -945,6 +968,39 @@ class Leaf(object):
         self.header = Header(buf)
         self.items = [Item(buf, Header.header.size + (i * Item.item.size))
                       for i in range(self.header.nritems)]
+
+
+class Node(object):
+    def __init__(self, buf):
+        self._buf = buf
+        self.header = Header(buf)
+        self.ptrs = [KeyPtr(buf, Header.header.size + (i * KeyPtr.key_ptr.size))
+                     for i in range(self.header.nritems)]
+
+
+class KeyPtr(object):
+    _key_ptr = [
+        DiskKey.disk_key,
+        struct.Struct("<QQ"),
+    ]
+    key_ptr = struct.Struct("<" + ''.join([s.format[1:].decode() for s in _key_ptr]))
+
+    def __init__(self, buf, pos):
+        self._buf = buf
+        self._pos = pos
+        self.key = DiskKey(buf, pos)
+        pos += DiskKey.disk_key.size
+        self.blockptr, self.generation = KeyPtr._key_ptr[1].unpack_from(buf, pos)
+
+    def __str__(self):
+        return "key {} block {} gen {}".format(self.key, self.blockptr, self.generation)
+
+    def write(self):
+        buf = self._buf
+        pos = self._pos
+        self.key.yolo(buf, pos)
+        pos += DiskKey.disk_key.size
+        KeyPtr._key_ptr[1].pack_into(buf, pos, self.blockptr, self.generation)
 
 
 class DummyItem(object):
