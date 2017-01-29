@@ -393,7 +393,7 @@ class DiskKey(Key):
     def __init__(self, data, pos):
         super(DiskKey, self).__init__(*DiskKey.disk_key.unpack_from(data, pos))
 
-    def yolo(self, buf, pos):
+    def write(self, buf, pos):
         DiskKey.disk_key.pack_into(buf, pos, self.objectid, self.type, self.offset)
 
 
@@ -926,10 +926,10 @@ class Item(object):
     def __str__(self):
         return "item {} offset {} size {}".format(self.disk_key, self.offset, self.size)
 
-    def yolo(self):
+    def write(self):
         buf = self._buf
         pos = self._pos
-        self.disk_key.yolo(buf, pos)
+        self.disk_key.write(buf, pos)
         pos += DiskKey.disk_key.size
         Item._item[1].pack_into(buf, pos, self.offset, self.size)
 
@@ -954,10 +954,10 @@ class DirItem(object):
         return "dir location {} transid {} data_len {} name_len {} type {}".format(
             self.location, self.transid, self.data_len, self.name_len, self.type)
 
-    def yolo(self):
+    def write(self):
         buf = self._buf
         pos = self._pos
-        self.location.yolo(buf, pos)
+        self.location.write(buf, pos)
         pos += DiskKey.disk_key.size
         DirItem._dir_item[1].pack_into(buf, pos, self.transid, self.data_len,
                                        self.name_len, self.type)
@@ -998,7 +998,7 @@ class KeyPtr(object):
     def write(self):
         buf = self._buf
         pos = self._pos
-        self.key.yolo(buf, pos)
+        self.key.write(buf, pos)
         pos += DiskKey.disk_key.size
         KeyPtr._key_ptr[1].pack_into(buf, pos, self.blockptr, self.generation)
 
