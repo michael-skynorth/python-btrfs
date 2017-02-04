@@ -21,6 +21,7 @@ from collections import namedtuple
 import array
 import fcntl
 import itertools
+import platform
 import struct
 import sys
 import uuid
@@ -32,19 +33,34 @@ ULONG_MAX = (1 << 32) - 1
 
 BTRFS_IOCTL_MAGIC = 0x94
 
+# from include/uapi/asm-generic/ioctl.h
 _IOC_NRBITS = 8
 _IOC_TYPEBITS = 8
-_IOC_SIZEBITS = 14
-_IOC_DIRBITS = 2
+
+arch = platform.machine()
+if arch in ('alpha', 'mips', 'powerpc', 'sparc'):
+    _IOC_SIZEBITS = 13
+    _IOC_DIRBITS = 3
+    _IOC_NONE = 1
+    _IOC_READ = 2
+    _IOC_WRITE = 4
+elif arch == 'parisc':
+    _IOC_SIZEBITS = 14
+    _IOC_DIRBITS = 2
+    _IOC_NONE = 0
+    _IOC_WRITE = 2
+    _IOC_READ = 1
+else:
+    _IOC_SIZEBITS = 14
+    _IOC_DIRBITS = 2
+    _IOC_NONE = 0
+    _IOC_WRITE = 1
+    _IOC_READ = 2
 
 _IOC_NRSHIFT = 0
 _IOC_TYPESHIFT = _IOC_NRSHIFT + _IOC_NRBITS
 _IOC_SIZESHIFT = _IOC_TYPESHIFT + _IOC_TYPEBITS
 _IOC_DIRSHIFT = _IOC_SIZESHIFT + _IOC_SIZEBITS
-
-_IOC_NONE = 0
-_IOC_WRITE = 1
-_IOC_READ = 2
 
 
 def _IOC(_dir, _type, nr, size):
