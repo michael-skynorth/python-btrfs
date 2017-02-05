@@ -20,7 +20,10 @@ from __future__ import division, print_function, absolute_import, unicode_litera
 import copy
 import os
 import struct
+import sys
 import uuid
+
+_python2 = sys.version_info[0] == 2
 
 ULLONG_MAX = (1 << 64) - 1
 ULONG_MAX = (1 << 32) - 1
@@ -166,6 +169,29 @@ _root_flags_str_map = {
     ROOT_SUBVOL_RDONLY: 'RDONLY',
 }
 
+FT_UNKNOWN = 0
+FT_REG_FILE = 1
+FT_DIR = 2
+FT_CHRDEV = 3
+FT_BLKDEV = 4
+FT_FIFO = 5
+FT_SOCK = 6
+FT_SYMLINK = 7
+FT_XATTR = 8
+FT_MAX = 9
+
+_dir_item_type_str_map = {
+    FT_UNKNOWN: 'UNKNOWN',
+    FT_REG_FILE: 'FILE',
+    FT_DIR: 'DIR',
+    FT_CHRDEV: 'CHRDEV',
+    FT_BLKDEV: 'BLKDEV',
+    FT_FIFO: 'FIFO',
+    FT_SOCK: 'SOCK',
+    FT_SYMLINK: 'SYMLINK',
+    FT_XATTR: 'XATTR',
+}
+
 
 def qgroup_level(objectid):
     return objectid >> QGROUP_LEVEL_SHIFT
@@ -274,6 +300,12 @@ def key_offset_str(offset, _type):
         return '-1'
 
     return str(offset)
+
+
+def bytestring_utf8_unicode(bytestring):
+    if _python2:
+        return unicode(bytestring, 'utf-8')
+    return bytestring.decode('utf-8')
 
 
 import btrfs.ioctl
@@ -809,6 +841,77 @@ class InodeItem(object):
                 self.generation, self.transid, self.size, self.nbytes, self.block_group,
                 oct(self.mode), self.nlink, self.uid, self.gid, self.rdev, hex(self.flags),
                 btrfs.utils.flags_str(self.flags, _inode_flags_str_map))
+
+
+class InodeRef(object):
+    inode_ref = struct.Struct('<QH')
+
+    def __init__(self, header, buf, pos=0):
+        self.key = Key(header.objectid, header.type, header.offset)
+        self.index, self.name_len = InodeRef.inode_ref.unpack_from(buf, pos)
+        pos += InodeRef.inode_ref.size
+        self.name, = struct.Struct('<{}s'.format(self.name_len)).unpack_from(buf, pos)
+
+    def __unicode__(self):
+        ret = ["inode ref index", str(self.index)]
+        try:
+            ret.extend(["name utf-8", bytestring_utf8_unicode(self.name)])
+        except UnicodeDecodeError:
+            ret.extend(["name repr", repr(self.name)])
+        return ' '.join(ret)
+
+    def __str__(self):
+        if _python2:
+            return self.__unicode__().encode('utf-8')
+        return self.__unicode__()
+
+
+class DirItem(object):
+    _dir_item = [
+        DiskKey.disk_key,
+        struct.Struct('<QHHB')
+    ]
+    dir_item = struct.Struct('<' + ''.join([s.format[1:].decode() for s in _dir_item]))
+
+    def __init__(self, header, buf, pos=0):
+        self.key = Key(header.objectid, header.type, header.offset)
+        self.location = DiskKey(buf, pos)
+        pos += DiskKey.disk_key.size
+        self.transid, self.data_len, self.name_len, self.type = \
+            DirItem._dir_item[1].unpack_from(buf, pos)
+        pos += DirItem._dir_item[1].size
+        self.name, = struct.Struct('<{}s'.format(self.name_len)).unpack_from(buf, pos)
+        pos += self.name_len
+        self.data, = struct.Struct('<{}s'.format(self.data_len)).unpack_from(buf, pos)
+        pos += self.data_len
+        self._len = DirItem.dir_item.size + self.name_len + self.data_len
+
+    def __unicode__(self):
+        ret = ["dir item location {} type {}".format(
+            self.location, _dir_item_type_str_map[self.type])]
+        if self.name_len > 0:
+            try:
+                ret.extend(["name utf-8", bytestring_utf8_unicode(self.name)])
+            except UnicodeDecodeError:
+                ret.extend(["name raw", repr(self.name)])
+        if self.data_len > 0:
+            try:
+                ret.extend(["data utf-8", bytestring_utf8_unicode(self.data)])
+            except UnicodeDecodeError:
+                ret.extend(["data raw", repr(self.data)])
+        return ' '.join(ret)
+
+    def __str__(self):
+        if _python2:
+            return self.__unicode__().encode('utf-8')
+        return self.__unicode__()
+
+    def __len__(self):
+        return self._len
+
+
+class DirIndex(DirItem):
+    pass
 
 
 class RootItem(object):
